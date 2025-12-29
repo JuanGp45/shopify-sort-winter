@@ -118,7 +118,7 @@ function getProductGroup(tags) {
 }
 
 function getProductColor(tags) {
-  const colors = ['BLACK', 'BLUE', 'YELLOW', 'RED', 'GREEN', 'WHITE', 'GREY', 'GRAY', 'PINK', 'ORANGE', 'PURPLE', 'BROWN', 'BEIGE', 'NAVY', 'CREAM', 'KHAKI', 'OLIVE', 'BURGUNDY', 'MAROON', 'TEAL', 'CORAL', 'GOLD', 'SILVER'];
+  const colors = ['BLACK', 'BLUE', 'YELLOW', 'RED', 'GREEN', 'WHITE', 'GREY', 'GRAY', 'PINK', 'ORANGE', 'PURPLE', 'BROWN', 'BEIGE', 'NAVY', 'CREAM', 'KHAKI', 'OLIVE', 'BURGUNDY', 'MAROON', 'TEAL', 'CORAL', 'GOLD', 'SILVER', 'MULTICOLOR'];
   for (const tag of tags) {
     const upper = tag.toUpperCase();
     if (colors.includes(upper)) return upper;
@@ -161,42 +161,8 @@ function getRecentColors(visible, gap) {
   return recent;
 }
 
-function isGroupValid(p, usedGroupsLocal, globalUsedGroups) {
-  if (p.group && globalUsedGroups.has(p.group)) return false;
-  if (p.group && usedGroupsLocal.has(p.group)) return false;
-  return true;
-}
-
-function isColorValid(p, visible) {
-  const { COLOR_GAP } = getConfig();
-  if (!p.color) return true;
-  const recentColors = getRecentColors(visible, COLOR_GAP);
-  return !recentColors.includes(p.color);
-}
-
-function findBestCandidate(candidates, visible, usedGroupsLocal, globalUsedIds, globalUsedGroups) {
-  // Primero: buscar uno que cumpla TODAS las reglas (grupo + color)
-  for (let i = 0; i < candidates.length; i++) {
-    const p = candidates[i];
-    if (globalUsedIds.has(p.id)) continue;
-    if (!isGroupValid(p, usedGroupsLocal, globalUsedGroups)) continue;
-    if (!isColorValid(p, visible)) continue;
-    return i;
-  }
-  
-  // Fallback: buscar uno que al menos cumpla la regla de grupo (color es menos importante)
-  for (let i = 0; i < candidates.length; i++) {
-    const p = candidates[i];
-    if (globalUsedIds.has(p.id)) continue;
-    if (!isGroupValid(p, usedGroupsLocal, globalUsedGroups)) continue;
-    return i;
-  }
-  
-  return -1;
-}
-
 function sortCollection(products, sales, summerIds, globalUsedIds, globalUsedGroups, shouldAlternate, insertGiftCard) {
-  const { MIN_SIZES, VISIBLE_PRODUCTS } = getConfig();
+  const { MIN_SIZES, VISIBLE_PRODUCTS, COLOR_GAP } = getConfig();
   
   const all = products.map(p => {
     const group = getProductGroup(p.tags);
@@ -221,60 +187,95 @@ function sortCollection(products, sales, summerIds, globalUsedIds, globalUsedGro
   
   const visible = [];
   const usedGroupsLocal = new Set();
+  const usedInVisible = new Set();
+  
+  // Función para verificar si un producto puede ser añadido
+  function canAdd(p, checkColor = true) {
+    if (globalUsedIds.has(p.id)) return false;
+    if (usedInVisible.has(p.id)) return false;
+    if (p.group && globalUsedGroups.has(p.group)) return false;
+    if (p.group && usedGroupsLocal.has(p.group)) return false;
+    if (checkColor && p.color) {
+      const recentColors = getRecentColors(visible, COLOR_GAP);
+      if (recentColors.includes(p.color)) return false;
+    }
+    return true;
+  }
+  
+  // Función para encontrar el mejor candidato
+  function findCandidate(candidates) {
+    // Primero: buscar uno que cumpla color + grupo
+    for (const p of candidates) {
+      if (canAdd(p, true)) return p;
+    }
+    // Solo si no hay NINGUNO que cumpla color, usar fallback (solo grupo)
+    for (const p of candidates) {
+      if (canAdd(p, false)) return p;
+    }
+    return null;
+  }
   
   if (shouldAlternate) {
-    const main = [...eligible.filter(p => isMainType(p.type))];
-    const other = [...eligible.filter(p => !isMainType(p.type))];
+    const mainPool = eligible.filter(p => isMainType(p.type));
+    const otherPool = eligible.filter(p => !isMainType(p.type));
     
-    while (visible.length < VISIBLE_PRODUCTS && (main.length > 0 || other.length > 0)) {
+    while (visible.length < VISIBLE_PRODUCTS) {
       let addedMain = 0;
-      while (addedMain < 2 && main.length > 0 && visible.length < VISIBLE_PRODUCTS) {
-        const idx = findBestCandidate(main, visible, usedGroupsLocal, globalUsedIds, globalUsedGroups);
-        if (idx === -1) break;
-        const p = main.splice(idx, 1)[0];
-        visible.push(p);
-        if (p.group) usedGroupsLocal.add(p.group);
+      
+      // Añadir hasta 2 main types
+      while (addedMain < 2 && visible.length < VISIBLE_PRODUCTS) {
+        const candidate = findCandidate(mainPool);
+        if (!candidate) break;
+        
+        visible.push(candidate);
+        usedInVisible.add(candidate.id);
+        if (candidate.group) usedGroupsLocal.add(candidate.group);
         addedMain++;
       }
       
-      if (other.length > 0 && visible.length < VISIBLE_PRODUCTS) {
-        const idx = findBestCandidate(other, visible, usedGroupsLocal, globalUsedIds, globalUsedGroups);
-        if (idx >= 0) {
-          const p = other.splice(idx, 1)[0];
-          visible.push(p);
-          if (p.group) usedGroupsLocal.add(p.group);
+      // Añadir 1 otro tipo
+      if (visible.length < VISIBLE_PRODUCTS) {
+        const candidate = findCandidate(otherPool);
+        if (candidate) {
+          visible.push(candidate);
+          usedInVisible.add(candidate.id);
+          if (candidate.group) usedGroupsLocal.add(candidate.group);
         }
       }
       
-      if (addedMain === 0 && findBestCandidate(other, visible, usedGroupsLocal, globalUsedIds, globalUsedGroups) === -1) break;
+      // Si no pudimos añadir nada en esta iteración, salir
+      if (addedMain === 0 && !findCandidate(otherPool)) break;
     }
   } else {
-    const candidates = [...eligible];
-    while (visible.length < VISIBLE_PRODUCTS && candidates.length > 0) {
-      const idx = findBestCandidate(candidates, visible, usedGroupsLocal, globalUsedIds, globalUsedGroups);
-      if (idx === -1) break;
-      const p = candidates.splice(idx, 1)[0];
-      visible.push(p);
-      if (p.group) usedGroupsLocal.add(p.group);
+    while (visible.length < VISIBLE_PRODUCTS) {
+      const candidate = findCandidate(eligible);
+      if (!candidate) break;
+      
+      visible.push(candidate);
+      usedInVisible.add(candidate.id);
+      if (candidate.group) usedGroupsLocal.add(candidate.group);
     }
   }
   
+  // Insertar gift card en posición 3
   if (insertGiftCard && giftCard && visible.length >= 2) {
     visible.splice(2, 0, giftCard);
   }
   
+  // Marcar como usados globalmente
   for (const p of visible) {
     globalUsedIds.add(p.id);
     if (p.group) globalUsedGroups.add(p.group);
   }
   
-  const visibleIds = new Set(visible.map(p => p.id));
-  const restEligible = eligible.filter(p => !visibleIds.has(p.id));
+  // Resto de productos
+  const restEligible = eligible.filter(p => !usedInVisible.has(p.id));
   
+  // Log
   console.log(`   Visible: ${visible.length} productos`);
-  console.log(`   Top 12:`);
+  console.log(`   Colores en orden:`);
   visible.slice(0, 12).forEach((p, i) => {
-    console.log(`      ${i + 1}. ${p.title} | Color: ${p.color || 'N/A'} | ${p.group || 'sin grupo'}`);
+    console.log(`      ${i + 1}. [${p.color || 'N/A'}] ${p.title.substring(0, 30)}`);
   });
   
   return [...visible, ...restEligible, ...fewSizes, ...summer, ...soldOut].map(p => p.id);
@@ -284,7 +285,7 @@ async function sortAllCollections() {
   const { DAYS, COLLECTION_IDS, COLOR_GAP, NO_ALTERNATE_COLLECTION, GIFT_CARD_COLLECTION } = getConfig();
   
   console.log('=== YUXUS WINTER SALE ===');
-  console.log(`Reglas: 1 dia, 4+ tallas, 1 por grupo, color gap ${COLOR_GAP}`);
+  console.log(`Reglas: 1 dia, 4+ tallas, 1 por grupo, NO repetir color en ${COLOR_GAP} posiciones`);
   
   const sales = await getSalesFromDays(DAYS);
   const summerIds = await getSummerProductIds();
