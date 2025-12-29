@@ -118,9 +118,10 @@ function getProductGroup(tags) {
 }
 
 function getProductColor(tags) {
-  const colors = ['BLACK', 'BLUE', 'YELLOW', 'RED', 'GREEN', 'WHITE', 'GREY', 'GRAY', 'PINK', 'ORANGE', 'PURPLE', 'BROWN', 'BEIGE', 'NAVY', 'CREAM'];
+  const colors = ['BLACK', 'BLUE', 'YELLOW', 'RED', 'GREEN', 'WHITE', 'GREY', 'GRAY', 'PINK', 'ORANGE', 'PURPLE', 'BROWN', 'BEIGE', 'NAVY', 'CREAM', 'KHAKI', 'OLIVE', 'BURGUNDY', 'MAROON', 'TEAL', 'CORAL', 'GOLD', 'SILVER'];
   for (const tag of tags) {
-    if (colors.includes(tag.toUpperCase())) return tag.toUpperCase();
+    const upper = tag.toUpperCase();
+    if (colors.includes(upper)) return upper;
   }
   return null;
 }
@@ -160,14 +161,38 @@ function getRecentColors(visible, gap) {
   return recent;
 }
 
-function canAddProduct(p, visible, usedGroupsLocal, globalUsedIds, globalUsedGroups) {
-  const { COLOR_GAP } = getConfig();
-  if (globalUsedIds.has(p.id)) return false;
+function isGroupValid(p, usedGroupsLocal, globalUsedGroups) {
   if (p.group && globalUsedGroups.has(p.group)) return false;
   if (p.group && usedGroupsLocal.has(p.group)) return false;
-  const recentColors = getRecentColors(visible, COLOR_GAP);
-  if (p.color && recentColors.includes(p.color)) return false;
   return true;
+}
+
+function isColorValid(p, visible) {
+  const { COLOR_GAP } = getConfig();
+  if (!p.color) return true;
+  const recentColors = getRecentColors(visible, COLOR_GAP);
+  return !recentColors.includes(p.color);
+}
+
+function findBestCandidate(candidates, visible, usedGroupsLocal, globalUsedIds, globalUsedGroups) {
+  // Primero: buscar uno que cumpla TODAS las reglas (grupo + color)
+  for (let i = 0; i < candidates.length; i++) {
+    const p = candidates[i];
+    if (globalUsedIds.has(p.id)) continue;
+    if (!isGroupValid(p, usedGroupsLocal, globalUsedGroups)) continue;
+    if (!isColorValid(p, visible)) continue;
+    return i;
+  }
+  
+  // Fallback: buscar uno que al menos cumpla la regla de grupo (color es menos importante)
+  for (let i = 0; i < candidates.length; i++) {
+    const p = candidates[i];
+    if (globalUsedIds.has(p.id)) continue;
+    if (!isGroupValid(p, usedGroupsLocal, globalUsedGroups)) continue;
+    return i;
+  }
+  
+  return -1;
 }
 
 function sortCollection(products, sales, summerIds, globalUsedIds, globalUsedGroups, shouldAlternate, insertGiftCard) {
@@ -204,49 +229,31 @@ function sortCollection(products, sales, summerIds, globalUsedIds, globalUsedGro
     while (visible.length < VISIBLE_PRODUCTS && (main.length > 0 || other.length > 0)) {
       let addedMain = 0;
       while (addedMain < 2 && main.length > 0 && visible.length < VISIBLE_PRODUCTS) {
-        let foundIdx = -1;
-        for (let i = 0; i < main.length; i++) {
-          if (canAddProduct(main[i], visible, usedGroupsLocal, globalUsedIds, globalUsedGroups)) {
-            foundIdx = i;
-            break;
-          }
-        }
-        if (foundIdx === -1) break;
-        const p = main.splice(foundIdx, 1)[0];
+        const idx = findBestCandidate(main, visible, usedGroupsLocal, globalUsedIds, globalUsedGroups);
+        if (idx === -1) break;
+        const p = main.splice(idx, 1)[0];
         visible.push(p);
         if (p.group) usedGroupsLocal.add(p.group);
         addedMain++;
       }
       
       if (other.length > 0 && visible.length < VISIBLE_PRODUCTS) {
-        let foundIdx = -1;
-        for (let i = 0; i < other.length; i++) {
-          if (canAddProduct(other[i], visible, usedGroupsLocal, globalUsedIds, globalUsedGroups)) {
-            foundIdx = i;
-            break;
-          }
-        }
-        if (foundIdx >= 0) {
-          const p = other.splice(foundIdx, 1)[0];
+        const idx = findBestCandidate(other, visible, usedGroupsLocal, globalUsedIds, globalUsedGroups);
+        if (idx >= 0) {
+          const p = other.splice(idx, 1)[0];
           visible.push(p);
           if (p.group) usedGroupsLocal.add(p.group);
         }
       }
       
-      if (addedMain === 0 && other.length === 0) break;
+      if (addedMain === 0 && findBestCandidate(other, visible, usedGroupsLocal, globalUsedIds, globalUsedGroups) === -1) break;
     }
   } else {
     const candidates = [...eligible];
     while (visible.length < VISIBLE_PRODUCTS && candidates.length > 0) {
-      let foundIdx = -1;
-      for (let i = 0; i < candidates.length; i++) {
-        if (canAddProduct(candidates[i], visible, usedGroupsLocal, globalUsedIds, globalUsedGroups)) {
-          foundIdx = i;
-          break;
-        }
-      }
-      if (foundIdx === -1) break;
-      const p = candidates.splice(foundIdx, 1)[0];
+      const idx = findBestCandidate(candidates, visible, usedGroupsLocal, globalUsedIds, globalUsedGroups);
+      if (idx === -1) break;
+      const p = candidates.splice(idx, 1)[0];
       visible.push(p);
       if (p.group) usedGroupsLocal.add(p.group);
     }
@@ -264,17 +271,17 @@ function sortCollection(products, sales, summerIds, globalUsedIds, globalUsedGro
   const visibleIds = new Set(visible.map(p => p.id));
   const restEligible = eligible.filter(p => !visibleIds.has(p.id));
   
-  console.log(`   Visible: ${visible.length} productos, ${usedGroupsLocal.size} grupos`);
-  console.log(`   Top 10:`);
-  visible.slice(0, 10).forEach((p, i) => {
-    console.log(`      ${i + 1}. ${p.title} [${p.color || 'N/A'}] ${p.group || ''}`);
+  console.log(`   Visible: ${visible.length} productos`);
+  console.log(`   Top 12:`);
+  visible.slice(0, 12).forEach((p, i) => {
+    console.log(`      ${i + 1}. ${p.title} | Color: ${p.color || 'N/A'} | ${p.group || 'sin grupo'}`);
   });
   
   return [...visible, ...restEligible, ...fewSizes, ...summer, ...soldOut].map(p => p.id);
 }
 
 async function sortAllCollections() {
-  const { DAYS, COLLECTION_IDS, VISIBLE_PRODUCTS, COLOR_GAP, NO_ALTERNATE_COLLECTION, GIFT_CARD_COLLECTION } = getConfig();
+  const { DAYS, COLLECTION_IDS, COLOR_GAP, NO_ALTERNATE_COLLECTION, GIFT_CARD_COLLECTION } = getConfig();
   
   console.log('=== YUXUS WINTER SALE ===');
   console.log(`Reglas: 1 dia, 4+ tallas, 1 por grupo, color gap ${COLOR_GAP}`);
