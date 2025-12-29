@@ -21,6 +21,7 @@ function getConfig() {
     VISIBLE_PRODUCTS: 24,
     NO_ALTERNATE_COLLECTION: 'gid://shopify/Collection/687225241945',
     GIFT_CARD_COLLECTION: 'gid://shopify/Collection/687225209177',
+    SUMMER_COLLECTION: 'gid://shopify/Collection/685894238553',
     COLLECTION_IDS: process.env.COLLECTION_IDS ? process.env.COLLECTION_IDS.split(',').map(id => id.trim()) : [],
   };
 }
@@ -59,6 +60,23 @@ async function getSalesFromDays(daysAgo) {
   }
   console.log(`   OK ${totalOrders} pedidos, ${Object.keys(salesCount).length} productos`);
   return salesCount;
+}
+
+async function getSummerProductIds() {
+  const { SUMMER_COLLECTION } = getConfig();
+  const query = `query GetCollectionProducts($id: ID!, $cursor: String) { collection(id: $id) { products(first: 250, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { id } } } }`;
+  const productIds = new Set();
+  let cursor = null, hasNextPage = true;
+  while (hasNextPage) {
+    const result = await shopifyGraphQL(query, { id: SUMMER_COLLECTION, cursor });
+    const collection = result.data.collection;
+    if (!collection) break;
+    collection.products.nodes.forEach(p => productIds.add(p.id));
+    hasNextPage = collection.products.pageInfo.hasNextPage;
+    cursor = collection.products.pageInfo.endCursor;
+  }
+  console.log(`Productos de verano excluidos: ${productIds.size}`);
+  return productIds;
 }
 
 async function getCollectionProducts(collectionId) {
@@ -138,7 +156,7 @@ function getAvailableSizes(product) {
   return availableSizes;
 }
 
-function categorizeProduct(product, sales) {
+function categorizeProduct(product, sales, summerProductIds) {
   const { MIN_SIZES } = getConfig();
   const salesCount = sales[product.id] || 0;
   const totalInventory = product.totalInventory || 0;
@@ -149,8 +167,9 @@ function categorizeProduct(product, sales) {
   const availableSizes = getAvailableSizes(product);
   const isSoldOut = tracksInventory && totalInventory === 0;
   const giftCard = isGiftCard(product);
+  const isSummer = summerProductIds.has(product.id);
   const hasEnoughSizes = giftCard || availableSizes >= MIN_SIZES;
-  return { ...product, salesCount, isSoldOut, color, productType, productGroup, availableSizes, hasEnoughSizes, totalInventory, isGiftCard: giftCard };
+  return { ...product, salesCount, isSoldOut, color, productType, productGroup, availableSizes, hasEnoughSizes, totalInventory, isGiftCard: giftCard, isSummer };
 }
 
 function isProductAvailable(product, usedProductIds, usedGroups) {
@@ -164,18 +183,19 @@ function markProductAsUsed(product, usedProductIds, usedGroups) {
   if (product.productGroup) usedGroups.add(product.productGroup);
 }
 
-function sortProductsWithRules(products, sales, usedProductIds, usedGroups, shouldAlternate, insertGiftCardAt3) {
+function sortProductsWithRules(products, sales, usedProductIds, usedGroups, shouldAlternate, insertGiftCardAt3, summerProductIds) {
   const { MIN_SIZES, VISIBLE_PRODUCTS } = getConfig();
-  const categorized = products.map(p => categorizeProduct(p, sales));
+  const categorized = products.map(p => categorizeProduct(p, sales, summerProductIds));
   
   const giftCard = categorized.find(p => p.isGiftCard);
   const withoutGiftCard = categorized.filter(p => !p.isGiftCard);
   
   const soldOut = withoutGiftCard.filter(p => p.isSoldOut).sort((a, b) => b.salesCount - a.salesCount);
-  const eligible = withoutGiftCard.filter(p => p.hasEnoughSizes && !p.isSoldOut && isProductAvailable(p, usedProductIds, usedGroups)).sort((a, b) => b.salesCount - a.salesCount);
-  const notEnoughSizes = withoutGiftCard.filter(p => !p.hasEnoughSizes && !p.isSoldOut).sort((a, b) => b.salesCount - a.salesCount);
+  const summer = withoutGiftCard.filter(p => p.isSummer && !p.isSoldOut).sort((a, b) => b.salesCount - a.salesCount);
+  const notEnoughSizes = withoutGiftCard.filter(p => !p.hasEnoughSizes && !p.isSoldOut && !p.isSummer).sort((a, b) => b.salesCount - a.salesCount);
+  const eligible = withoutGiftCard.filter(p => p.hasEnoughSizes && !p.isSoldOut && !p.isSummer && isProductAvailable(p, usedProductIds, usedGroups)).sort((a, b) => b.salesCount - a.salesCount);
   
-  console.log(`   Elegibles: ${eligible.length} | Pocas tallas: ${notEnoughSizes.length} | SOLD OUT: ${soldOut.length}`);
+  console.log(`   Elegibles: ${eligible.length} | Pocas tallas: ${notEnoughSizes.length} | Verano: ${summer.length} | SOLD OUT: ${soldOut.length}`);
   
   let orderedEligible = [];
   
@@ -223,10 +243,10 @@ function sortProductsWithRules(products, sales, usedProductIds, usedGroups, shou
   const visibleProducts = orderedEligible.slice(0, VISIBLE_PRODUCTS);
   visibleProducts.forEach(p => markProductAsUsed(p, usedProductIds, usedGroups));
   
-  return [...orderedEligible, ...notEnoughSizes, ...soldOut];
+  return [...orderedEligible, ...notEnoughSizes, ...summer, ...soldOut];
 }
 
-async function sortCollectionBySales(collectionId, sales, usedProductIds, usedGroups) {
+async function sortCollectionBySales(collectionId, sales, usedProductIds, usedGroups, summerProductIds) {
   const { NO_ALTERNATE_COLLECTION, GIFT_CARD_COLLECTION } = getConfig();
   const shouldAlternate = collectionId !== NO_ALTERNATE_COLLECTION;
   const insertGiftCardAt3 = collectionId === GIFT_CARD_COLLECTION;
@@ -236,7 +256,7 @@ async function sortCollectionBySales(collectionId, sales, usedProductIds, usedGr
   if (insertGiftCardAt3) console.log(`   (GIFT CARD en posicion 3)`);
   
   const { products, title } = await getCollectionProducts(collectionId);
-  const sorted = sortProductsWithRules(products, sales, usedProductIds, usedGroups, shouldAlternate, insertGiftCardAt3);
+  const sorted = sortProductsWithRules(products, sales, usedProductIds, usedGroups, shouldAlternate, insertGiftCardAt3, summerProductIds);
   await reorderCollection(collectionId, sorted.map(p => p.id));
   
   console.log(`OK "${title}" ordenada`);
@@ -256,17 +276,19 @@ async function sortAllCollections() {
   console.log(`Minimo ${MIN_SIZES} tallas`);
   console.log(`Sin colores consecutivos`);
   console.log(`Sin repetir productos ni grupos (bubbles)`);
+  console.log(`Productos verano al final`);
   console.log(`Patron: 2 mas vendidos + 1 no hoodie/crewneck`);
   console.log(`Sin repetir en primeros ${VISIBLE_PRODUCTS} de cada coleccion`);
   console.log(`Colecciones: ${COLLECTION_IDS.length}\n`);
   
   const sales = await getSalesFromDays(DAYS);
+  const summerProductIds = await getSummerProductIds();
   const usedProductIds = new Set();
   const usedGroups = new Set();
   const results = [];
   
   for (const id of COLLECTION_IDS) {
-    try { results.push(await sortCollectionBySales(id, sales, usedProductIds, usedGroups)); }
+    try { results.push(await sortCollectionBySales(id, sales, usedProductIds, usedGroups, summerProductIds)); }
     catch (e) { console.error(`Error ${id}:`, e.message); results.push({ collectionId: id, error: e.message }); }
   }
   
