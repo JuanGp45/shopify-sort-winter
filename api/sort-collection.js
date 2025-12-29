@@ -172,34 +172,11 @@ function categorizeProduct(product, sales, summerProductIds) {
   return { ...product, salesCount, isSoldOut, color, productType, productGroup, availableSizes, hasEnoughSizes, totalInventory, isGiftCard: giftCard, isSummer };
 }
 
-function isProductAvailable(product, usedProductIds, usedGroups) {
+function canUseProduct(product, usedProductIds, usedGroups, lastColor) {
   if (usedProductIds.has(product.id)) return false;
   if (product.productGroup && usedGroups.has(product.productGroup)) return false;
+  if (product.color === lastColor) return false;
   return true;
-}
-
-function canPlaceProduct(product, lastProduct) {
-  if (!lastProduct) return true;
-  if (product.color === lastProduct.color) return false;
-  if (product.productGroup && lastProduct.productGroup && product.productGroup === lastProduct.productGroup) return false;
-  return true;
-}
-
-function markProductAsUsed(product, usedProductIds, usedGroups) {
-  usedProductIds.add(product.id);
-  if (product.productGroup) usedGroups.add(product.productGroup);
-}
-
-function findBestProduct(candidates, lastProduct) {
-  let bestIndex = -1;
-  for (let i = 0; i < candidates.length; i++) {
-    if (canPlaceProduct(candidates[i], lastProduct)) {
-      bestIndex = i;
-      break;
-    }
-  }
-  if (bestIndex === -1) bestIndex = 0;
-  return bestIndex;
 }
 
 function sortProductsWithRules(products, sales, usedProductIds, usedGroups, shouldAlternate, insertGiftCardAt3, summerProductIds) {
@@ -212,48 +189,116 @@ function sortProductsWithRules(products, sales, usedProductIds, usedGroups, shou
   const soldOut = withoutGiftCard.filter(p => p.isSoldOut).sort((a, b) => b.salesCount - a.salesCount);
   const summer = withoutGiftCard.filter(p => p.isSummer && !p.isSoldOut).sort((a, b) => b.salesCount - a.salesCount);
   const notEnoughSizes = withoutGiftCard.filter(p => !p.hasEnoughSizes && !p.isSoldOut && !p.isSummer).sort((a, b) => b.salesCount - a.salesCount);
-  const eligible = withoutGiftCard.filter(p => p.hasEnoughSizes && !p.isSoldOut && !p.isSummer && isProductAvailable(p, usedProductIds, usedGroups)).sort((a, b) => b.salesCount - a.salesCount);
+  const eligible = withoutGiftCard.filter(p => p.hasEnoughSizes && !p.isSoldOut && !p.isSummer).sort((a, b) => b.salesCount - a.salesCount);
   
   console.log(`   Elegibles: ${eligible.length} | Pocas tallas: ${notEnoughSizes.length} | Verano: ${summer.length} | SOLD OUT: ${soldOut.length}`);
   
-  let orderedEligible = [];
+  const visibleOrder = [];
+  const usedGroupsLocal = new Set(usedGroups);
+  const usedProductsLocal = new Set(usedProductIds);
   
   if (shouldAlternate) {
     const mainProducts = [...eligible.filter(p => isMainType(p.productType))];
     const otherProducts = [...eligible.filter(p => !isMainType(p.productType))];
     
-    while (mainProducts.length > 0 || otherProducts.length > 0) {
-      for (let i = 0; i < 2 && mainProducts.length > 0; i++) {
-        const lastProduct = orderedEligible.length > 0 ? orderedEligible[orderedEligible.length - 1] : null;
-        const foundIndex = findBestProduct(mainProducts, lastProduct);
-        orderedEligible.push(mainProducts[foundIndex]);
-        mainProducts.splice(foundIndex, 1);
+    while (visibleOrder.length < VISIBLE_PRODUCTS && (mainProducts.length > 0 || otherProducts.length > 0)) {
+      for (let i = 0; i < 2 && mainProducts.length > 0 && visibleOrder.length < VISIBLE_PRODUCTS; i++) {
+        const lastColor = visibleOrder.length > 0 ? visibleOrder[visibleOrder.length - 1].color : null;
+        let foundIndex = -1;
+        for (let j = 0; j < mainProducts.length; j++) {
+          if (canUseProduct(mainProducts[j], usedProductsLocal, usedGroupsLocal, lastColor)) {
+            foundIndex = j;
+            break;
+          }
+        }
+        if (foundIndex === -1) {
+          for (let j = 0; j < mainProducts.length; j++) {
+            if (!usedProductsLocal.has(mainProducts[j].id) && (!mainProducts[j].productGroup || !usedGroupsLocal.has(mainProducts[j].productGroup))) {
+              foundIndex = j;
+              break;
+            }
+          }
+        }
+        if (foundIndex >= 0) {
+          const product = mainProducts[foundIndex];
+          visibleOrder.push(product);
+          usedProductsLocal.add(product.id);
+          if (product.productGroup) usedGroupsLocal.add(product.productGroup);
+          mainProducts.splice(foundIndex, 1);
+        } else {
+          break;
+        }
       }
-      if (otherProducts.length > 0) {
-        const lastProduct = orderedEligible.length > 0 ? orderedEligible[orderedEligible.length - 1] : null;
-        const foundIndex = findBestProduct(otherProducts, lastProduct);
-        orderedEligible.push(otherProducts[foundIndex]);
-        otherProducts.splice(foundIndex, 1);
+      
+      if (otherProducts.length > 0 && visibleOrder.length < VISIBLE_PRODUCTS) {
+        const lastColor = visibleOrder.length > 0 ? visibleOrder[visibleOrder.length - 1].color : null;
+        let foundIndex = -1;
+        for (let j = 0; j < otherProducts.length; j++) {
+          if (canUseProduct(otherProducts[j], usedProductsLocal, usedGroupsLocal, lastColor)) {
+            foundIndex = j;
+            break;
+          }
+        }
+        if (foundIndex === -1) {
+          for (let j = 0; j < otherProducts.length; j++) {
+            if (!usedProductsLocal.has(otherProducts[j].id) && (!otherProducts[j].productGroup || !usedGroupsLocal.has(otherProducts[j].productGroup))) {
+              foundIndex = j;
+              break;
+            }
+          }
+        }
+        if (foundIndex >= 0) {
+          const product = otherProducts[foundIndex];
+          visibleOrder.push(product);
+          usedProductsLocal.add(product.id);
+          if (product.productGroup) usedGroupsLocal.add(product.productGroup);
+          otherProducts.splice(foundIndex, 1);
+        }
       }
     }
   } else {
     const remaining = [...eligible];
-    while (remaining.length > 0) {
-      const lastProduct = orderedEligible.length > 0 ? orderedEligible[orderedEligible.length - 1] : null;
-      const foundIndex = findBestProduct(remaining, lastProduct);
-      orderedEligible.push(remaining[foundIndex]);
-      remaining.splice(foundIndex, 1);
+    while (visibleOrder.length < VISIBLE_PRODUCTS && remaining.length > 0) {
+      const lastColor = visibleOrder.length > 0 ? visibleOrder[visibleOrder.length - 1].color : null;
+      let foundIndex = -1;
+      for (let j = 0; j < remaining.length; j++) {
+        if (canUseProduct(remaining[j], usedProductsLocal, usedGroupsLocal, lastColor)) {
+          foundIndex = j;
+          break;
+        }
+      }
+      if (foundIndex === -1) {
+        for (let j = 0; j < remaining.length; j++) {
+          if (!usedProductsLocal.has(remaining[j].id) && (!remaining[j].productGroup || !usedGroupsLocal.has(remaining[j].productGroup))) {
+            foundIndex = j;
+            break;
+          }
+        }
+      }
+      if (foundIndex >= 0) {
+        const product = remaining[foundIndex];
+        visibleOrder.push(product);
+        usedProductsLocal.add(product.id);
+        if (product.productGroup) usedGroupsLocal.add(product.productGroup);
+        remaining.splice(foundIndex, 1);
+      } else {
+        break;
+      }
     }
   }
   
-  if (insertGiftCardAt3 && giftCard) {
-    orderedEligible.splice(2, 0, giftCard);
+  if (insertGiftCardAt3 && giftCard && visibleOrder.length >= 2) {
+    visibleOrder.splice(2, 0, giftCard);
   }
   
-  const visibleProducts = orderedEligible.slice(0, VISIBLE_PRODUCTS);
-  visibleProducts.forEach(p => markProductAsUsed(p, usedProductIds, usedGroups));
+  visibleOrder.forEach(p => {
+    usedProductIds.add(p.id);
+    if (p.productGroup) usedGroups.add(p.productGroup);
+  });
   
-  return [...orderedEligible, ...notEnoughSizes, ...summer, ...soldOut];
+  const restEligible = eligible.filter(p => !usedProductsLocal.has(p.id));
+  
+  return [...visibleOrder, ...restEligible, ...notEnoughSizes, ...summer, ...soldOut];
 }
 
 async function sortCollectionBySales(collectionId, sales, usedProductIds, usedGroups, summerProductIds) {
@@ -285,11 +330,10 @@ async function sortAllCollections() {
   console.log(`Ventas ultimo ${DAYS} dia`);
   console.log(`Minimo ${MIN_SIZES} tallas`);
   console.log(`Sin colores consecutivos`);
-  console.log(`Sin grupos consecutivos (bubbles)`);
+  console.log(`Solo 1 producto por Group en los ${VISIBLE_PRODUCTS} visibles`);
   console.log(`Sin repetir productos ni grupos entre colecciones`);
   console.log(`Productos verano al final`);
   console.log(`Patron: 2 mas vendidos + 1 no hoodie/crewneck`);
-  console.log(`Sin repetir en primeros ${VISIBLE_PRODUCTS} de cada coleccion`);
   console.log(`Colecciones: ${COLLECTION_IDS.length}\n`);
   
   const sales = await getSalesFromDays(DAYS);
