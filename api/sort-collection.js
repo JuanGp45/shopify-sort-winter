@@ -19,7 +19,7 @@ function getConfig() {
     DAYS: 2,
     MIN_SIZES: 4,
     VISIBLE_PRODUCTS: 24,
-    COLOR_GAP: 2,
+    COLOR_GAP: 1,
     NO_ALTERNATE_COLLECTION: 'gid://shopify/Collection/687225241945',
     GIFT_CARD_COLLECTION: 'gid://shopify/Collection/687225209177',
     SUMMER_COLLECTION: 'gid://shopify/Collection/685894238553',
@@ -269,7 +269,7 @@ async function sortAllCollections() {
   const results = [];
 
   for (const collectionId of COLLECTION_IDS) {
-    const shouldAlternate = collectionId !== NO_ALTERNATE_COLLECTION;
+    const shouldAlternate = false;
     const insertGiftCard = collectionId === GIFT_CARD_COLLECTION;
 
     const { products, title } = await getCollectionProducts(collectionId);
