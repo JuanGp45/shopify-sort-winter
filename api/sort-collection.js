@@ -203,23 +203,10 @@ function sortCollection(products, sales, summerIds, globalUsedIds, globalUsedGro
       const needMain = patternPos < 2;
       const targetPool = validAll.filter(p => needMain ? isMainType(p.type) : !isMainType(p.type));
       
-      // 1. Buscar en pool objetivo con color válido
       candidate = targetPool.find(p => hasValidColor(p));
-      
-      // 2. Si no hay, buscar en CUALQUIER pool con color válido
-      if (!candidate) {
-        candidate = validAll.find(p => hasValidColor(p));
-      }
-      
-      // 3. Si no hay, buscar producto sin color
-      if (!candidate) {
-        candidate = validAll.find(p => !p.color);
-      }
-      
-      // 4. Último recurso
-      if (!candidate) {
-        candidate = validAll[0];
-      }
+      if (!candidate) candidate = validAll.find(p => hasValidColor(p));
+      if (!candidate) candidate = validAll.find(p => !p.color);
+      if (!candidate) candidate = validAll[0];
       
       addProduct(candidate);
       
@@ -231,7 +218,6 @@ function sortCollection(products, sales, summerIds, globalUsedIds, globalUsedGro
         patternPos = (patternPos + 1) % 3;
       }
     } else {
-      // Sin patrón: solo priorizar color
       candidate = validAll.find(p => hasValidColor(p));
       if (!candidate) candidate = validAll.find(p => !p.color);
       if (!candidate) candidate = validAll[0];
@@ -239,18 +225,15 @@ function sortCollection(products, sales, summerIds, globalUsedIds, globalUsedGro
     }
   }
   
-  // Insertar gift card en posición 3
   if (insertGiftCard && giftCard && visible.length >= 3) {
     visible.splice(2, 0, giftCard);
   }
   
-  // Marcar como usados globalmente
   for (const p of visible) {
     globalUsedIds.add(p.id);
     if (p.group) globalUsedGroups.add(p.group);
   }
   
-  // Resto de productos
   const rest = [...fewSizes, ...summer, ...soldOut].filter(p => !usedInVisible.has(p.id));
   const finalOrder = [...visible, ...eligible.filter(p => !usedInVisible.has(p.id)), ...rest];
   
@@ -260,9 +243,15 @@ function sortCollection(products, sales, summerIds, globalUsedIds, globalUsedGro
 async function reorderCollection(collectionId, productIds) {
   const moves = productIds.map((id, index) => ({ id, newPosition: index.toString() }));
   const mutation = `mutation collectionReorderProducts($id: ID!, $moves: [MoveInput!]!) { collectionReorderProducts(id: $id, moves: $moves) { userErrors { field message } } }`;
-  const result = await shopifyGraphQL(mutation, { id: collectionId, moves });
-  if (result.data.collectionReorderProducts.userErrors.length > 0) {
-    throw new Error(result.data.collectionReorderProducts.userErrors[0].message);
+  
+  // Dividir en chunks de 250 max
+  const CHUNK_SIZE = 250;
+  for (let i = 0; i < moves.length; i += CHUNK_SIZE) {
+    const chunk = moves.slice(i, i + CHUNK_SIZE);
+    const result = await shopifyGraphQL(mutation, { id: collectionId, moves: chunk });
+    if (result.data.collectionReorderProducts.userErrors.length > 0) {
+      throw new Error(result.data.collectionReorderProducts.userErrors[0].message);
+    }
   }
   console.log(`   Reordenados ${productIds.length} productos`);
 }
