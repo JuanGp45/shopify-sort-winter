@@ -58,7 +58,7 @@ async function getSalesFromDays(daysAgo) {
     hasNextPage = orders.pageInfo.hasNextPage;
     cursor = orders.pageInfo.endCursor;
   }
-  console.log(`   OK ${totalOrders} pedidos, ${Object.keys(salesCount).length} productos`);
+  console.log(`   ${totalOrders} pedidos, ${Object.keys(salesCount).length} productos vendidos`);
   return salesCount;
 }
 
@@ -75,7 +75,7 @@ async function getSummerProductIds() {
     hasNextPage = collection.products.pageInfo.hasNextPage;
     cursor = collection.products.pageInfo.endCursor;
   }
-  console.log(`Productos de verano excluidos: ${productIds.size}`);
+  console.log(`Productos verano: ${productIds.size}`);
   return productIds;
 }
 
@@ -93,7 +93,7 @@ async function getCollectionProducts(collectionId) {
     hasNextPage = collection.products.pageInfo.hasNextPage;
     cursor = collection.products.pageInfo.endCursor;
   }
-  console.log(`Coleccion "${collectionTitle}" (${products.length} productos)`);
+  console.log(`\n"${collectionTitle}" - ${products.length} productos`);
   if (sortOrder !== 'MANUAL') throw new Error(`"${collectionTitle}" debe ser MANUAL`);
   return { products, title: collectionTitle };
 }
@@ -106,248 +106,212 @@ async function reorderCollection(collectionId, sortedProductIds) {
     const chunk = moves.slice(i, i + chunkSize);
     const result = await shopifyGraphQL(mutation, { id: collectionId, moves: chunk });
     if (result.data.collectionReorderProducts.userErrors.length > 0) throw new Error(result.data.collectionReorderProducts.userErrors[0].message);
-    if (i + chunkSize < moves.length) await new Promise(r => setTimeout(r, 500));
   }
 }
 
-function getProductColor(product) {
-  const colorTags = ['BLACK', 'BLUE', 'YELLOW', 'RED', 'GREEN', 'WHITE', 'GREY', 'GRAY', 'PINK', 'ORANGE', 'PURPLE', 'BROWN', 'BEIGE', 'NAVY', 'CREAM', 'KHAKI', 'OLIVE', 'BURGUNDY', 'MAROON', 'TEAL', 'CORAL', 'GOLD', 'SILVER', 'MULTICOLOR'];
-  const tags = product.tags || [];
-  for (const tag of tags) {
-    if (colorTags.includes(tag.toUpperCase())) return tag.toUpperCase();
-  }
-  return 'UNKNOWN';
-}
-
-function getProductGroup(product) {
-  const tags = product.tags || [];
+function getProductGroup(tags) {
   for (const tag of tags) {
     if (tag.startsWith('Group_')) return tag;
   }
   return null;
 }
 
-function getProductType(product) {
-  const title = product.title.toUpperCase();
-  const types = ['HOODIE', 'CREWNECK', 'JEANS', 'PANTS', 'JERSEY', 'JACKET', 'SHIRT', 'TEE', 'SHORTS', 'SWEATER', 'COAT', 'VEST', 'PUFFER', 'CARDIGAN', 'POLO', 'TANK', 'SWEATPANTS', 'JOGGERS', 'TRACKSUIT', 'BLAZER'];
-  for (const type of types) {
-    if (title.includes(type)) return type;
+function getProductColor(tags) {
+  const colors = ['BLACK', 'BLUE', 'YELLOW', 'RED', 'GREEN', 'WHITE', 'GREY', 'GRAY', 'PINK', 'ORANGE', 'PURPLE', 'BROWN', 'BEIGE', 'NAVY', 'CREAM'];
+  for (const tag of tags) {
+    if (colors.includes(tag.toUpperCase())) return tag.toUpperCase();
   }
+  return null;
+}
+
+function getProductType(title) {
+  const t = title.toUpperCase();
+  if (t.includes('HOODIE')) return 'HOODIE';
+  if (t.includes('CREWNECK')) return 'CREWNECK';
+  if (t.includes('JEANS')) return 'JEANS';
+  if (t.includes('PANTS')) return 'PANTS';
+  if (t.includes('JERSEY')) return 'JERSEY';
+  if (t.includes('LONGSLEEVE')) return 'LONGSLEEVE';
+  if (t.includes('SNEAKERS')) return 'SNEAKERS';
   return 'OTHER';
 }
 
 function isMainType(type) {
-  return ['HOODIE', 'CREWNECK'].includes(type);
+  return type === 'HOODIE' || type === 'CREWNECK';
 }
 
-function isGiftCard(product) {
-  return product.title.toUpperCase().includes('GIFT CARD');
-}
-
-function getAvailableSizes(product) {
-  const variants = product.variants?.nodes || [];
-  let availableSizes = 0;
-  for (const variant of variants) {
-    if (variant.inventoryQuantity > 0) {
-      const sizeOption = variant.selectedOptions?.find(opt => opt.name.toLowerCase() === 'size' || opt.name.toLowerCase() === 'talla');
-      if (sizeOption) availableSizes++;
+function getAvailableSizes(variants) {
+  let count = 0;
+  for (const v of variants) {
+    if (v.inventoryQuantity > 0) {
+      const sizeOpt = v.selectedOptions?.find(o => o.name.toLowerCase() === 'size' || o.name.toLowerCase() === 'talla');
+      if (sizeOpt) count++;
     }
   }
-  return availableSizes;
+  return count;
 }
 
-function categorizeProduct(product, sales, summerProductIds) {
-  const { MIN_SIZES } = getConfig();
-  const salesCount = sales[product.id] || 0;
-  const totalInventory = product.totalInventory || 0;
-  const tracksInventory = product.tracksInventory;
-  const color = getProductColor(product);
-  const productType = getProductType(product);
-  const productGroup = getProductGroup(product);
-  const availableSizes = getAvailableSizes(product);
-  const isSoldOut = tracksInventory && totalInventory === 0;
-  const giftCard = isGiftCard(product);
-  const isSummer = summerProductIds.has(product.id);
-  const hasEnoughSizes = giftCard || availableSizes >= MIN_SIZES;
-  return { ...product, salesCount, isSoldOut, color, productType, productGroup, availableSizes, hasEnoughSizes, totalInventory, isGiftCard: giftCard, isSummer };
-}
-
-function canUseProduct(product, usedProductIds, usedGroups, lastColor) {
-  if (usedProductIds.has(product.id)) return false;
-  if (product.productGroup && usedGroups.has(product.productGroup)) return false;
-  if (product.color === lastColor) return false;
-  return true;
-}
-
-function sortProductsWithRules(products, sales, usedProductIds, usedGroups, shouldAlternate, insertGiftCardAt3, summerProductIds) {
+function sortCollection(products, sales, summerIds, globalUsedIds, globalUsedGroups, shouldAlternate, insertGiftCard) {
   const { MIN_SIZES, VISIBLE_PRODUCTS } = getConfig();
-  const categorized = products.map(p => categorizeProduct(p, sales, summerProductIds));
   
-  const giftCard = categorized.find(p => p.isGiftCard);
-  const withoutGiftCard = categorized.filter(p => !p.isGiftCard);
+  // Categorizar todos los productos
+  const all = products.map(p => {
+    const group = getProductGroup(p.tags);
+    const color = getProductColor(p.tags);
+    const type = getProductType(p.title);
+    const sizes = getAvailableSizes(p.variants?.nodes || []);
+    const salesCount = sales[p.id] || 0;
+    const isSoldOut = p.tracksInventory && p.totalInventory === 0;
+    const isSummer = summerIds.has(p.id);
+    const isGiftCard = p.title.toUpperCase().includes('GIFT CARD');
+    const hasEnoughSizes = isGiftCard || sizes >= MIN_SIZES;
+    return { ...p, group, color, type, sizes, salesCount, isSoldOut, isSummer, isGiftCard, hasEnoughSizes };
+  });
   
-  const soldOut = withoutGiftCard.filter(p => p.isSoldOut).sort((a, b) => b.salesCount - a.salesCount);
-  const summer = withoutGiftCard.filter(p => p.isSummer && !p.isSoldOut).sort((a, b) => b.salesCount - a.salesCount);
-  const notEnoughSizes = withoutGiftCard.filter(p => !p.hasEnoughSizes && !p.isSoldOut && !p.isSummer).sort((a, b) => b.salesCount - a.salesCount);
-  const eligible = withoutGiftCard.filter(p => p.hasEnoughSizes && !p.isSoldOut && !p.isSummer).sort((a, b) => b.salesCount - a.salesCount);
+  // Separar gift card
+  const giftCard = all.find(p => p.isGiftCard);
   
-  console.log(`   Elegibles: ${eligible.length} | Pocas tallas: ${notEnoughSizes.length} | Verano: ${summer.length} | SOLD OUT: ${soldOut.length}`);
+  // Separar por categorías
+  const eligible = all.filter(p => !p.isGiftCard && !p.isSoldOut && !p.isSummer && p.hasEnoughSizes).sort((a, b) => b.salesCount - a.salesCount);
+  const fewSizes = all.filter(p => !p.isGiftCard && !p.isSoldOut && !p.isSummer && !p.hasEnoughSizes).sort((a, b) => b.salesCount - a.salesCount);
+  const summer = all.filter(p => !p.isGiftCard && !p.isSoldOut && p.isSummer).sort((a, b) => b.salesCount - a.salesCount);
+  const soldOut = all.filter(p => !p.isGiftCard && p.isSoldOut).sort((a, b) => b.salesCount - a.salesCount);
   
-  const visibleOrder = [];
-  const usedGroupsLocal = new Set(usedGroups);
-  const usedProductsLocal = new Set(usedProductIds);
+  console.log(`   Elegibles: ${eligible.length}, Pocas tallas: ${fewSizes.length}, Verano: ${summer.length}, Sold out: ${soldOut.length}`);
+  
+  // CONSTRUIR LOS 24 VISIBLES - SIN REPETIR GRUPOS
+  const visible = [];
+  const usedGroupsInThisCollection = new Set();
   
   if (shouldAlternate) {
-    const mainProducts = [...eligible.filter(p => isMainType(p.productType))];
-    const otherProducts = [...eligible.filter(p => !isMainType(p.productType))];
+    // Separar main (hoodie/crewneck) y otros
+    const main = eligible.filter(p => isMainType(p.type));
+    const other = eligible.filter(p => !isMainType(p.type));
+    let mi = 0, oi = 0;
     
-    while (visibleOrder.length < VISIBLE_PRODUCTS && (mainProducts.length > 0 || otherProducts.length > 0)) {
-      for (let i = 0; i < 2 && mainProducts.length > 0 && visibleOrder.length < VISIBLE_PRODUCTS; i++) {
-        const lastColor = visibleOrder.length > 0 ? visibleOrder[visibleOrder.length - 1].color : null;
-        let foundIndex = -1;
-        for (let j = 0; j < mainProducts.length; j++) {
-          if (canUseProduct(mainProducts[j], usedProductsLocal, usedGroupsLocal, lastColor)) {
-            foundIndex = j;
-            break;
-          }
-        }
-        if (foundIndex === -1) {
-          for (let j = 0; j < mainProducts.length; j++) {
-            if (!usedProductsLocal.has(mainProducts[j].id) && (!mainProducts[j].productGroup || !usedGroupsLocal.has(mainProducts[j].productGroup))) {
-              foundIndex = j;
+    while (visible.length < VISIBLE_PRODUCTS && (mi < main.length || oi < other.length)) {
+      // Añadir hasta 2 main
+      let addedMain = 0;
+      while (addedMain < 2 && mi < main.length && visible.length < VISIBLE_PRODUCTS) {
+        const p = main[mi];
+        mi++;
+        // VERIFICAR: no usado globalmente, no grupo repetido local ni global
+        if (globalUsedIds.has(p.id)) continue;
+        if (p.group && globalUsedGroups.has(p.group)) continue;
+        if (p.group && usedGroupsInThisCollection.has(p.group)) continue;
+        // Color consecutivo es menos importante, pero intentamos evitar
+        if (visible.length > 0 && p.color && p.color === visible[visible.length - 1].color) {
+          // Buscar otro que no sea mismo color
+          let found = false;
+          for (let j = mi; j < main.length; j++) {
+            const alt = main[j];
+            if (globalUsedIds.has(alt.id)) continue;
+            if (alt.group && globalUsedGroups.has(alt.group)) continue;
+            if (alt.group && usedGroupsInThisCollection.has(alt.group)) continue;
+            if (alt.color !== p.color) {
+              visible.push(alt);
+              if (alt.group) usedGroupsInThisCollection.add(alt.group);
+              main.splice(j, 1);
+              addedMain++;
+              found = true;
               break;
             }
           }
-        }
-        if (foundIndex >= 0) {
-          const product = mainProducts[foundIndex];
-          visibleOrder.push(product);
-          usedProductsLocal.add(product.id);
-          if (product.productGroup) usedGroupsLocal.add(product.productGroup);
-          mainProducts.splice(foundIndex, 1);
+          if (!found) {
+            visible.push(p);
+            if (p.group) usedGroupsInThisCollection.add(p.group);
+            addedMain++;
+          }
         } else {
-          break;
+          visible.push(p);
+          if (p.group) usedGroupsInThisCollection.add(p.group);
+          addedMain++;
         }
       }
       
-      if (otherProducts.length > 0 && visibleOrder.length < VISIBLE_PRODUCTS) {
-        const lastColor = visibleOrder.length > 0 ? visibleOrder[visibleOrder.length - 1].color : null;
-        let foundIndex = -1;
-        for (let j = 0; j < otherProducts.length; j++) {
-          if (canUseProduct(otherProducts[j], usedProductsLocal, usedGroupsLocal, lastColor)) {
-            foundIndex = j;
-            break;
-          }
-        }
-        if (foundIndex === -1) {
-          for (let j = 0; j < otherProducts.length; j++) {
-            if (!usedProductsLocal.has(otherProducts[j].id) && (!otherProducts[j].productGroup || !usedGroupsLocal.has(otherProducts[j].productGroup))) {
-              foundIndex = j;
-              break;
-            }
-          }
-        }
-        if (foundIndex >= 0) {
-          const product = otherProducts[foundIndex];
-          visibleOrder.push(product);
-          usedProductsLocal.add(product.id);
-          if (product.productGroup) usedGroupsLocal.add(product.productGroup);
-          otherProducts.splice(foundIndex, 1);
-        }
-      }
-    }
-  } else {
-    const remaining = [...eligible];
-    while (visibleOrder.length < VISIBLE_PRODUCTS && remaining.length > 0) {
-      const lastColor = visibleOrder.length > 0 ? visibleOrder[visibleOrder.length - 1].color : null;
-      let foundIndex = -1;
-      for (let j = 0; j < remaining.length; j++) {
-        if (canUseProduct(remaining[j], usedProductsLocal, usedGroupsLocal, lastColor)) {
-          foundIndex = j;
-          break;
-        }
-      }
-      if (foundIndex === -1) {
-        for (let j = 0; j < remaining.length; j++) {
-          if (!usedProductsLocal.has(remaining[j].id) && (!remaining[j].productGroup || !usedGroupsLocal.has(remaining[j].productGroup))) {
-            foundIndex = j;
-            break;
-          }
-        }
-      }
-      if (foundIndex >= 0) {
-        const product = remaining[foundIndex];
-        visibleOrder.push(product);
-        usedProductsLocal.add(product.id);
-        if (product.productGroup) usedGroupsLocal.add(product.productGroup);
-        remaining.splice(foundIndex, 1);
-      } else {
+      // Añadir 1 otro
+      while (oi < other.length && visible.length < VISIBLE_PRODUCTS) {
+        const p = other[oi];
+        oi++;
+        if (globalUsedIds.has(p.id)) continue;
+        if (p.group && globalUsedGroups.has(p.group)) continue;
+        if (p.group && usedGroupsInThisCollection.has(p.group)) continue;
+        visible.push(p);
+        if (p.group) usedGroupsInThisCollection.add(p.group);
         break;
       }
     }
+  } else {
+    // Sin alternar, solo por ventas
+    for (const p of eligible) {
+      if (visible.length >= VISIBLE_PRODUCTS) break;
+      if (globalUsedIds.has(p.id)) continue;
+      if (p.group && globalUsedGroups.has(p.group)) continue;
+      if (p.group && usedGroupsInThisCollection.has(p.group)) continue;
+      visible.push(p);
+      if (p.group) usedGroupsInThisCollection.add(p.group);
+    }
   }
   
-  if (insertGiftCardAt3 && giftCard && visibleOrder.length >= 2) {
-    visibleOrder.splice(2, 0, giftCard);
+  // Insertar gift card en posición 3 si aplica
+  if (insertGiftCard && giftCard && visible.length >= 2) {
+    visible.splice(2, 0, giftCard);
   }
   
-  visibleOrder.forEach(p => {
-    usedProductIds.add(p.id);
-    if (p.productGroup) usedGroups.add(p.productGroup);
+  // Marcar como usados globalmente
+  for (const p of visible) {
+    globalUsedIds.add(p.id);
+    if (p.group) globalUsedGroups.add(p.group);
+  }
+  
+  // Log de grupos en visible
+  const groupsInVisible = visible.filter(p => p.group).map(p => p.group);
+  const uniqueGroups = [...new Set(groupsInVisible)];
+  console.log(`   Visible: ${visible.length} productos, ${uniqueGroups.length} grupos unicos`);
+  if (groupsInVisible.length !== uniqueGroups.length) {
+    console.log(`   ERROR: HAY GRUPOS DUPLICADOS!`);
+  }
+  
+  // Resto de elegibles no usados
+  const restEligible = eligible.filter(p => !visible.find(v => v.id === p.id));
+  
+  // Orden final
+  const final = [...visible, ...restEligible, ...fewSizes, ...summer, ...soldOut];
+  
+  // Log top 10
+  console.log(`   Top 10:`);
+  final.slice(0, 10).forEach((p, i) => {
+    console.log(`      ${i + 1}. ${p.title} ${p.group ? `[${p.group}]` : ''} (${p.salesCount} ventas)`);
   });
   
-  const restEligible = eligible.filter(p => !usedProductsLocal.has(p.id));
-  
-  return [...visibleOrder, ...restEligible, ...notEnoughSizes, ...summer, ...soldOut];
-}
-
-async function sortCollectionBySales(collectionId, sales, usedProductIds, usedGroups, summerProductIds) {
-  const { NO_ALTERNATE_COLLECTION, GIFT_CARD_COLLECTION } = getConfig();
-  const shouldAlternate = collectionId !== NO_ALTERNATE_COLLECTION;
-  const insertGiftCardAt3 = collectionId === GIFT_CARD_COLLECTION;
-  
-  console.log(`\nProcesando: ${collectionId}`);
-  if (shouldAlternate) console.log(`   (alternando: 2 mas vendidos + 1 otro)`);
-  if (insertGiftCardAt3) console.log(`   (GIFT CARD en posicion 3)`);
-  
-  const { products, title } = await getCollectionProducts(collectionId);
-  const sorted = sortProductsWithRules(products, sales, usedProductIds, usedGroups, shouldAlternate, insertGiftCardAt3, summerProductIds);
-  await reorderCollection(collectionId, sorted.map(p => p.id));
-  
-  console.log(`OK "${title}" ordenada`);
-  console.log(`Top 12:`);
-  sorted.slice(0, 12).forEach((p, i) => {
-    const group = p.productGroup ? ` [${p.productGroup}]` : '';
-    console.log(`   ${i + 1}. ${p.title} | ${p.productType} | ${p.color} | ${p.salesCount} ventas${group}`);
-  });
-  
-  return { collectionId, title, total: products.length };
+  return final.map(p => p.id);
 }
 
 async function sortAllCollections() {
-  const { DAYS, COLLECTION_IDS, MIN_SIZES, VISIBLE_PRODUCTS } = getConfig();
-  console.log('YUXUS WINTER SALE - Ordenacion por ventas');
-  console.log(`Ventas ultimo ${DAYS} dia`);
-  console.log(`Minimo ${MIN_SIZES} tallas`);
-  console.log(`Sin colores consecutivos`);
-  console.log(`Solo 1 producto por Group en los ${VISIBLE_PRODUCTS} visibles`);
-  console.log(`Sin repetir productos ni grupos entre colecciones`);
-  console.log(`Productos verano al final`);
-  console.log(`Patron: 2 mas vendidos + 1 no hoodie/crewneck`);
-  console.log(`Colecciones: ${COLLECTION_IDS.length}\n`);
+  const { DAYS, COLLECTION_IDS, VISIBLE_PRODUCTS, NO_ALTERNATE_COLLECTION, GIFT_CARD_COLLECTION } = getConfig();
+  
+  console.log('=== YUXUS WINTER SALE ===');
+  console.log(`Reglas: 1 dia ventas, 4+ tallas, no repetir grupos en ${VISIBLE_PRODUCTS} visibles`);
   
   const sales = await getSalesFromDays(DAYS);
-  const summerProductIds = await getSummerProductIds();
-  const usedProductIds = new Set();
-  const usedGroups = new Set();
+  const summerIds = await getSummerProductIds();
+  const globalUsedIds = new Set();
+  const globalUsedGroups = new Set();
   const results = [];
   
-  for (const id of COLLECTION_IDS) {
-    try { results.push(await sortCollectionBySales(id, sales, usedProductIds, usedGroups, summerProductIds)); }
-    catch (e) { console.error(`Error ${id}:`, e.message); results.push({ collectionId: id, error: e.message }); }
+  for (const collectionId of COLLECTION_IDS) {
+    const shouldAlternate = collectionId !== NO_ALTERNATE_COLLECTION;
+    const insertGiftCard = collectionId === GIFT_CARD_COLLECTION;
+    
+    const { products, title } = await getCollectionProducts(collectionId);
+    const sortedIds = sortCollection(products, sales, summerIds, globalUsedIds, globalUsedGroups, shouldAlternate, insertGiftCard);
+    await reorderCollection(collectionId, sortedIds);
+    
+    results.push({ title, total: products.length });
   }
   
-  console.log('\nCompletado!');
-  console.log(`Productos unicos: ${usedProductIds.size} | Grupos unicos: ${usedGroups.size}`);
-  return { success: true, stats: { days: DAYS, minSizes: MIN_SIZES, uniqueProducts: usedProductIds.size, uniqueGroups: usedGroups.size }, results };
+  console.log(`\n=== COMPLETADO ===`);
+  console.log(`Productos unicos: ${globalUsedIds.size}, Grupos unicos: ${globalUsedGroups.size}`);
+  
+  return { success: true, results };
 }
