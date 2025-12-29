@@ -99,26 +99,13 @@ async function getCollectionProducts(collectionId) {
   return { products, title: collectionTitle };
 }
 
-async function reorderCollection(collectionId, sortedProductIds) {
-  const mutation = `mutation ReorderProducts($id: ID!, $moves: [MoveInput!]!) { collectionReorderProducts(id: $id, moves: $moves) { job { id } userErrors { field message } } }`;
-  const moves = sortedProductIds.map((productId, index) => ({ id: productId, newPosition: String(index) }));
-  const chunkSize = 250;
-  for (let i = 0; i < moves.length; i += chunkSize) {
-    const chunk = moves.slice(i, i + chunkSize);
-    const result = await shopifyGraphQL(mutation, { id: collectionId, moves: chunk });
-    if (result.data.collectionReorderProducts.userErrors.length > 0) throw new Error(result.data.collectionReorderProducts.userErrors[0].message);
-  }
-}
-
 function getProductGroup(tags) {
-  for (const tag of tags) {
-    if (tag.startsWith('Group_')) return tag;
-  }
-  return null;
+  const groupTag = tags.find(t => t.startsWith('Group_'));
+  return groupTag || null;
 }
 
 function getProductColor(tags) {
-  const colors = ['BLACK', 'BLUE', 'YELLOW', 'RED', 'GREEN', 'WHITE', 'GREY', 'GRAY', 'PINK', 'ORANGE', 'PURPLE', 'BROWN', 'BEIGE', 'NAVY', 'CREAM', 'KHAKI', 'OLIVE', 'BURGUNDY', 'MAROON', 'TEAL', 'CORAL', 'GOLD', 'SILVER', 'MULTICOLOR'];
+  const colors = ['BLACK', 'BLUE', 'YELLOW', 'RED', 'GREEN', 'WHITE', 'GREY', 'GRAY', 'PINK', 'ORANGE', 'PURPLE', 'BROWN', 'BEIGE', 'NAVY', 'CREAM', 'KHAKI', 'OLIVE', 'BURGUNDY', 'MAROON', 'TEAL', 'CORAL', 'GOLD', 'SILVER'];
   for (const tag of tags) {
     const upper = tag.toUpperCase();
     if (colors.includes(upper)) return upper;
@@ -138,14 +125,23 @@ function isMainType(type) {
 }
 
 function getAvailableSizes(variants) {
+  const validSizes = ['XXS', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL'];
   let count = 0;
   for (const v of variants) {
     if (v.inventoryQuantity > 0) {
-      const sizeOpt = v.selectedOptions?.find(o => o.name.toLowerCase() === 'size' || o.name.toLowerCase() === 'talla');
-      if (sizeOpt) count++;
+      const sizeOpt = v.selectedOptions?.find(o => o.name.toLowerCase() === 'size');
+      if (sizeOpt && validSizes.includes(sizeOpt.value.toUpperCase())) count++;
     }
   }
   return count;
+}
+
+function getRecentColors(visible, n) {
+  const cols = [];
+  for (let i = visible.length - 1; i >= 0 && cols.length < n; i--) {
+    if (visible[i].color) cols.push(visible[i].color);
+  }
+  return cols;
 }
 
 function sortCollection(products, sales, summerIds, globalUsedIds, globalUsedGroups, shouldAlternate, insertGiftCard) {
@@ -173,107 +169,78 @@ function sortCollection(products, sales, summerIds, globalUsedIds, globalUsedGro
   console.log(`   Elegibles: ${eligible.length}, Pocas tallas: ${fewSizes.length}, Verano: ${summer.length}, Sold out: ${soldOut.length}`);
   
   const visible = [];
-  const usedIds = new Set();
-  const usedGroups = new Set();
+  const usedGroupsLocal = new Set();
+  const usedInVisible = new Set();
   
-  function getRecentColors(n) {
-    const colors = [];
-    for (let i = visible.length - 1; i >= 0 && colors.length < n; i--) {
-      if (visible[i].color) colors.push(visible[i].color);
-    }
-    return colors;
-  }
-  
-  function isValidCandidate(p) {
-    if (globalUsedIds.has(p.id) || usedIds.has(p.id)) return false;
-    if (p.group && (globalUsedGroups.has(p.group) || usedGroups.has(p.group))) return false;
+  function isValid(p) {
+    if (globalUsedIds.has(p.id)) return false;
+    if (usedInVisible.has(p.id)) return false;
+    if (p.group && globalUsedGroups.has(p.group)) return false;
+    if (p.group && usedGroupsLocal.has(p.group)) return false;
     return true;
   }
   
   function hasValidColor(p) {
-    if (!p.color) return true; // Sin color = siempre válido
-    const recent = getRecentColors(COLOR_GAP);
-    return !recent.includes(p.color);
+    if (!p.color) return true;
+    return !getRecentColors(visible, COLOR_GAP).includes(p.color);
   }
   
   function addProduct(p) {
     visible.push(p);
-    usedIds.add(p.id);
-    if (p.group) usedGroups.add(p.group);
+    usedInVisible.add(p.id);
+    if (p.group) usedGroupsLocal.add(p.group);
   }
   
-  // Función que busca el mejor candidato con color válido
-  function findBest(pool, requireMainType = null) {
-    // Filtrar por tipo si es necesario
-    let candidates = pool.filter(p => isValidCandidate(p));
-    if (requireMainType === true) candidates = candidates.filter(p => isMainType(p.type));
-    if (requireMainType === false) candidates = candidates.filter(p => !isMainType(p.type));
-    
-    // Primero: buscar con color válido
-    for (const p of candidates) {
-      if (hasValidColor(p)) return p;
-    }
-    
-    // Fallback: si no hay con color válido, NO añadir (mantener gap estricto)
-    // PERO si han pasado muchas iteraciones sin encontrar, relajar
-    return null;
-  }
+  let patternPos = 0;
   
-  if (shouldAlternate) {
-    let failCount = 0;
-    while (visible.length < VISIBLE_PRODUCTS && failCount < 50) {
-      const beforeLen = visible.length;
+  while (visible.length < VISIBLE_PRODUCTS) {
+    const validAll = eligible.filter(p => isValid(p));
+    if (validAll.length === 0) break;
+    
+    let candidate = null;
+    
+    if (shouldAlternate) {
+      const needMain = patternPos < 2;
+      const targetPool = validAll.filter(p => needMain ? isMainType(p.type) : !isMainType(p.type));
       
-      // Intentar añadir 2 main types
-      for (let i = 0; i < 2 && visible.length < VISIBLE_PRODUCTS; i++) {
-        const main = findBest(eligible, true);
-        if (main) addProduct(main);
+      // 1. Buscar en pool objetivo con color válido
+      candidate = targetPool.find(p => hasValidColor(p));
+      
+      // 2. Si no hay, buscar en CUALQUIER pool con color válido
+      if (!candidate) {
+        candidate = validAll.find(p => hasValidColor(p));
       }
       
-      // Intentar añadir 1 otro tipo
-      if (visible.length < VISIBLE_PRODUCTS) {
-        const other = findBest(eligible, false);
-        if (other) addProduct(other);
+      // 3. Si no hay, buscar producto sin color
+      if (!candidate) {
+        candidate = validAll.find(p => !p.color);
       }
       
-      // Si no se añadió nada, incrementar contador de fallos
-      if (visible.length === beforeLen) {
-        failCount++;
-        // Después de 10 intentos, permitir cualquier producto válido (ignorando color)
-        if (failCount > 10) {
-          const any = eligible.find(p => isValidCandidate(p));
-          if (any) {
-            addProduct(any);
-            failCount = 0;
-          }
-        }
+      // 4. Último recurso
+      if (!candidate) {
+        candidate = validAll[0];
+      }
+      
+      addProduct(candidate);
+      
+      if (needMain && isMainType(candidate.type)) {
+        patternPos++;
+      } else if (!needMain && !isMainType(candidate.type)) {
+        patternPos = 0;
       } else {
-        failCount = 0;
+        patternPos = (patternPos + 1) % 3;
       }
-    }
-  } else {
-    // Sin alternación: simplemente añadir en orden de ventas respetando color gap
-    let failCount = 0;
-    while (visible.length < VISIBLE_PRODUCTS && failCount < 50) {
-      const candidate = findBest(eligible, null);
-      if (candidate) {
-        addProduct(candidate);
-        failCount = 0;
-      } else {
-        failCount++;
-        if (failCount > 10) {
-          const any = eligible.find(p => isValidCandidate(p));
-          if (any) {
-            addProduct(any);
-            failCount = 0;
-          }
-        }
-      }
+    } else {
+      // Sin patrón: solo priorizar color
+      candidate = validAll.find(p => hasValidColor(p));
+      if (!candidate) candidate = validAll.find(p => !p.color);
+      if (!candidate) candidate = validAll[0];
+      addProduct(candidate);
     }
   }
   
   // Insertar gift card en posición 3
-  if (insertGiftCard && giftCard && visible.length >= 2) {
+  if (insertGiftCard && giftCard && visible.length >= 3) {
     visible.splice(2, 0, giftCard);
   }
   
@@ -284,42 +251,47 @@ function sortCollection(products, sales, summerIds, globalUsedIds, globalUsedGro
   }
   
   // Resto de productos
-  const restEligible = eligible.filter(p => !usedIds.has(p.id));
+  const rest = [...fewSizes, ...summer, ...soldOut].filter(p => !usedInVisible.has(p.id));
+  const finalOrder = [...visible, ...eligible.filter(p => !usedInVisible.has(p.id)), ...rest];
   
-  // Log
-  console.log(`   Visible: ${visible.length} productos`);
-  visible.slice(0, 12).forEach((p, i) => {
-    console.log(`      ${i + 1}. [${p.color || 'N/A'}] ${p.title.substring(0, 35)}`);
-  });
-  
-  return [...visible, ...restEligible, ...fewSizes, ...summer, ...soldOut].map(p => p.id);
+  return finalOrder.map(p => p.id);
+}
+
+async function reorderCollection(collectionId, productIds) {
+  const moves = productIds.map((id, index) => ({ id, newPosition: index.toString() }));
+  const mutation = `mutation collectionReorderProducts($id: ID!, $moves: [MoveInput!]!) { collectionReorderProducts(id: $id, moves: $moves) { userErrors { field message } } }`;
+  const result = await shopifyGraphQL(mutation, { id: collectionId, moves });
+  if (result.data.collectionReorderProducts.userErrors.length > 0) {
+    throw new Error(result.data.collectionReorderProducts.userErrors[0].message);
+  }
+  console.log(`   Reordenados ${productIds.length} productos`);
 }
 
 async function sortAllCollections() {
-  const { DAYS, COLLECTION_IDS, COLOR_GAP, NO_ALTERNATE_COLLECTION, GIFT_CARD_COLLECTION } = getConfig();
+  const { DAYS, COLLECTION_IDS, MIN_SIZES, VISIBLE_PRODUCTS, COLOR_GAP, NO_ALTERNATE_COLLECTION, GIFT_CARD_COLLECTION } = getConfig();
   
-  console.log('=== YUXUS WINTER SALE ===');
-  console.log(`Reglas: 1 dia, 4+ tallas, 1 por grupo, color gap ${COLOR_GAP}`);
+  console.log('=== YUXUS SORT ===');
+  console.log(`Ventas: ${DAYS} dia, Min tallas: ${MIN_SIZES}, Visible: ${VISIBLE_PRODUCTS}, Color gap: ${COLOR_GAP}`);
   
   const sales = await getSalesFromDays(DAYS);
   const summerIds = await getSummerProductIds();
   const globalUsedIds = new Set();
   const globalUsedGroups = new Set();
   const results = [];
-  
+
   for (const collectionId of COLLECTION_IDS) {
     const shouldAlternate = collectionId !== NO_ALTERNATE_COLLECTION;
     const insertGiftCard = collectionId === GIFT_CARD_COLLECTION;
-    
+
     const { products, title } = await getCollectionProducts(collectionId);
     const sortedIds = sortCollection(products, sales, summerIds, globalUsedIds, globalUsedGroups, shouldAlternate, insertGiftCard);
     await reorderCollection(collectionId, sortedIds);
-    
+
     results.push({ title, total: products.length });
   }
-  
+
   console.log(`\n=== COMPLETADO ===`);
   console.log(`Productos unicos: ${globalUsedIds.size}, Grupos unicos: ${globalUsedGroups.size}`);
-  
+
   return { success: true, results };
 }
