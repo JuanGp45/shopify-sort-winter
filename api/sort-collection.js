@@ -19,7 +19,7 @@ function getConfig() {
     DAYS: 1,
     MIN_SIZES: 4,
     VISIBLE_PRODUCTS: 24,
-    COLOR_GAP: 3,
+    COLOR_GAP: 2,
     NO_ALTERNATE_COLLECTION: 'gid://shopify/Collection/687225241945',
     GIFT_CARD_COLLECTION: 'gid://shopify/Collection/687225209177',
     SUMMER_COLLECTION: 'gid://shopify/Collection/685894238553',
