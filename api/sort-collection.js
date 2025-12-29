@@ -178,9 +178,28 @@ function isProductAvailable(product, usedProductIds, usedGroups) {
   return true;
 }
 
+function canPlaceProduct(product, lastProduct) {
+  if (!lastProduct) return true;
+  if (product.color === lastProduct.color) return false;
+  if (product.productGroup && lastProduct.productGroup && product.productGroup === lastProduct.productGroup) return false;
+  return true;
+}
+
 function markProductAsUsed(product, usedProductIds, usedGroups) {
   usedProductIds.add(product.id);
   if (product.productGroup) usedGroups.add(product.productGroup);
+}
+
+function findBestProduct(candidates, lastProduct) {
+  let bestIndex = -1;
+  for (let i = 0; i < candidates.length; i++) {
+    if (canPlaceProduct(candidates[i], lastProduct)) {
+      bestIndex = i;
+      break;
+    }
+  }
+  if (bestIndex === -1) bestIndex = 0;
+  return bestIndex;
 }
 
 function sortProductsWithRules(products, sales, usedProductIds, usedGroups, shouldAlternate, insertGiftCardAt3, summerProductIds) {
@@ -205,32 +224,23 @@ function sortProductsWithRules(products, sales, usedProductIds, usedGroups, shou
     
     while (mainProducts.length > 0 || otherProducts.length > 0) {
       for (let i = 0; i < 2 && mainProducts.length > 0; i++) {
-        const lastColor = orderedEligible.length > 0 ? orderedEligible[orderedEligible.length - 1].color : null;
-        let found = -1;
-        for (let j = 0; j < mainProducts.length; j++) {
-          if (mainProducts[j].color !== lastColor) { found = j; break; }
-        }
-        if (found === -1) found = 0;
-        orderedEligible.push(mainProducts[found]);
-        mainProducts.splice(found, 1);
+        const lastProduct = orderedEligible.length > 0 ? orderedEligible[orderedEligible.length - 1] : null;
+        const foundIndex = findBestProduct(mainProducts, lastProduct);
+        orderedEligible.push(mainProducts[foundIndex]);
+        mainProducts.splice(foundIndex, 1);
       }
       if (otherProducts.length > 0) {
-        const lastColor = orderedEligible.length > 0 ? orderedEligible[orderedEligible.length - 1].color : null;
-        let found = -1;
-        for (let j = 0; j < otherProducts.length; j++) {
-          if (otherProducts[j].color !== lastColor) { found = j; break; }
-        }
-        if (found === -1) found = 0;
-        orderedEligible.push(otherProducts[found]);
-        otherProducts.splice(found, 1);
+        const lastProduct = orderedEligible.length > 0 ? orderedEligible[orderedEligible.length - 1] : null;
+        const foundIndex = findBestProduct(otherProducts, lastProduct);
+        orderedEligible.push(otherProducts[foundIndex]);
+        otherProducts.splice(foundIndex, 1);
       }
     }
   } else {
     const remaining = [...eligible];
     while (remaining.length > 0) {
-      const lastColor = orderedEligible.length > 0 ? orderedEligible[orderedEligible.length - 1].color : null;
-      let foundIndex = remaining.findIndex(p => p.color !== lastColor);
-      if (foundIndex === -1) foundIndex = 0;
+      const lastProduct = orderedEligible.length > 0 ? orderedEligible[orderedEligible.length - 1] : null;
+      const foundIndex = findBestProduct(remaining, lastProduct);
       orderedEligible.push(remaining[foundIndex]);
       remaining.splice(foundIndex, 1);
     }
@@ -275,7 +285,8 @@ async function sortAllCollections() {
   console.log(`Ventas ultimo ${DAYS} dia`);
   console.log(`Minimo ${MIN_SIZES} tallas`);
   console.log(`Sin colores consecutivos`);
-  console.log(`Sin repetir productos ni grupos (bubbles)`);
+  console.log(`Sin grupos consecutivos (bubbles)`);
+  console.log(`Sin repetir productos ni grupos entre colecciones`);
   console.log(`Productos verano al final`);
   console.log(`Patron: 2 mas vendidos + 1 no hoodie/crewneck`);
   console.log(`Sin repetir en primeros ${VISIBLE_PRODUCTS} de cada coleccion`);
