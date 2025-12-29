@@ -16,7 +16,7 @@ function getConfig() {
   return {
     SHOPIFY_STORE: process.env.SHOPIFY_STORE,
     ACCESS_TOKEN: process.env.SHOPIFY_ACCESS_TOKEN,
-    DAYS: 1,
+    DAYS: 2,
     MIN_SIZES: 4,
     VISIBLE_PRODUCTS: 24,
     COLOR_GAP: 2,
