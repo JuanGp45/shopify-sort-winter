@@ -18,6 +18,8 @@ function getConfig() {
     ACCESS_TOKEN: process.env.SHOPIFY_ACCESS_TOKEN,
     DAYS: 1,
     MIN_SIZES: 4,
+    VISIBLE_PRODUCTS: 24,
+    NO_ALTERNATE_COLLECTION: 'gid://shopify/Collection/687225241945',
     COLLECTION_IDS: process.env.COLLECTION_IDS ? process.env.COLLECTION_IDS.split(',').map(id => id.trim()) : [],
   };
 }
@@ -38,7 +40,7 @@ async function getSalesFromDays(daysAgo) {
   const startDate = new Date();
   startDate.setDate(startDate.getDate() - daysAgo);
   const dateFilter = startDate.toISOString().split('T')[0];
-  console.log(`📊 Ventas ultimo ${daysAgo} dia (desde ${dateFilter})`);
+  console.log(`Ventas ultimo ${daysAgo} dia (desde ${dateFilter})`);
   const query = `query GetOrders($cursor: String) { orders(first: 250, after: $cursor, query: "created_at:>=${dateFilter} source_name:web financial_status:paid") { pageInfo { hasNextPage endCursor } nodes { id lineItems(first: 100) { nodes { product { id } quantity } } } } }`;
   const salesCount = {};
   let cursor = null, hasNextPage = true, totalOrders = 0;
@@ -98,6 +100,19 @@ function getProductColor(product) {
   return 'UNKNOWN';
 }
 
+function getProductType(product) {
+  const title = product.title.toUpperCase();
+  const types = ['HOODIE', 'CREWNECK', 'JEANS', 'PANTS', 'JERSEY', 'JACKET', 'SHIRT', 'TEE', 'SHORTS', 'SWEATER', 'COAT', 'VEST', 'PUFFER', 'CARDIGAN', 'POLO', 'TANK', 'SWEATPANTS', 'JOGGERS', 'TRACKSUIT', 'BLAZER'];
+  for (const type of types) {
+    if (title.includes(type)) return type;
+  }
+  return 'OTHER';
+}
+
+function isMainType(type) {
+  return ['HOODIE', 'CREWNECK'].includes(type);
+}
+
 function getAvailableSizes(product) {
   const variants = product.variants?.nodes || [];
   let availableSizes = 0;
@@ -116,57 +131,107 @@ function categorizeProduct(product, sales) {
   const totalInventory = product.totalInventory || 0;
   const tracksInventory = product.tracksInventory;
   const color = getProductColor(product);
+  const productType = getProductType(product);
   const availableSizes = getAvailableSizes(product);
   const isSoldOut = tracksInventory && totalInventory === 0;
   const hasEnoughSizes = availableSizes >= MIN_SIZES;
-  return { ...product, salesCount, isSoldOut, color, availableSizes, hasEnoughSizes, totalInventory };
+  return { ...product, salesCount, isSoldOut, color, productType, availableSizes, hasEnoughSizes, totalInventory };
 }
 
-function sortProductsNoConsecutiveColors(products, sales) {
-  const { MIN_SIZES } = getConfig();
+function sortProductsWithRules(products, sales, usedProductIds, shouldAlternate) {
+  const { MIN_SIZES, VISIBLE_PRODUCTS } = getConfig();
   const categorized = products.map(p => categorizeProduct(p, sales));
+  
   const soldOut = categorized.filter(p => p.isSoldOut).sort((a, b) => b.salesCount - a.salesCount);
-  const eligible = categorized.filter(p => p.hasEnoughSizes && !p.isSoldOut).sort((a, b) => b.salesCount - a.salesCount);
+  const eligible = categorized.filter(p => p.hasEnoughSizes && !p.isSoldOut && !usedProductIds.has(p.id)).sort((a, b) => b.salesCount - a.salesCount);
   const notEnoughSizes = categorized.filter(p => !p.hasEnoughSizes && !p.isSoldOut).sort((a, b) => b.salesCount - a.salesCount);
-  console.log(`   Elegibles (${MIN_SIZES}+ tallas): ${eligible.length} | Pocas tallas: ${notEnoughSizes.length} | SOLD OUT: ${soldOut.length}`);
+  
+  console.log(`   Elegibles: ${eligible.length} | Pocas tallas: ${notEnoughSizes.length} | SOLD OUT: ${soldOut.length}`);
+  
   const orderedEligible = [];
   const remaining = [...eligible];
-  while (remaining.length > 0) {
-    const lastColor = orderedEligible.length > 0 ? orderedEligible[orderedEligible.length - 1].color : null;
-    let foundIndex = remaining.findIndex(p => p.color !== lastColor);
-    if (foundIndex === -1) foundIndex = 0;
-    orderedEligible.push(remaining[foundIndex]);
-    remaining.splice(foundIndex, 1);
+  
+  if (shouldAlternate) {
+    const mainTypes = remaining.filter(p => isMainType(p.productType));
+    const otherTypes = remaining.filter(p => !isMainType(p.productType));
+    let mainIndex = 0, otherIndex = 0;
+    
+    while (mainIndex < mainTypes.length || otherIndex < otherTypes.length) {
+      for (let i = 0; i < 2 && mainIndex < mainTypes.length; i++) {
+        const lastColor = orderedEligible.length > 0 ? orderedEligible[orderedEligible.length - 1].color : null;
+        let found = -1;
+        for (let j = mainIndex; j < mainTypes.length; j++) {
+          if (mainTypes[j].color !== lastColor) { found = j; break; }
+        }
+        if (found === -1) found = mainIndex;
+        orderedEligible.push(mainTypes[found]);
+        mainTypes.splice(found, 1);
+      }
+      if (otherIndex < otherTypes.length) {
+        const lastColor = orderedEligible.length > 0 ? orderedEligible[orderedEligible.length - 1].color : null;
+        let found = -1;
+        for (let j = otherIndex; j < otherTypes.length; j++) {
+          if (otherTypes[j].color !== lastColor) { found = j; break; }
+        }
+        if (found === -1) found = otherIndex;
+        orderedEligible.push(otherTypes[found]);
+        otherTypes.splice(found, 1);
+      }
+    }
+  } else {
+    while (remaining.length > 0) {
+      const lastColor = orderedEligible.length > 0 ? orderedEligible[orderedEligible.length - 1].color : null;
+      let foundIndex = remaining.findIndex(p => p.color !== lastColor);
+      if (foundIndex === -1) foundIndex = 0;
+      orderedEligible.push(remaining[foundIndex]);
+      remaining.splice(foundIndex, 1);
+    }
   }
+  
+  const visibleProducts = orderedEligible.slice(0, VISIBLE_PRODUCTS);
+  visibleProducts.forEach(p => usedProductIds.add(p.id));
+  
   return [...orderedEligible, ...notEnoughSizes, ...soldOut];
 }
 
-async function sortCollectionBySales(collectionId, sales) {
-  console.log(`\nProcesando: ${collectionId}`);
+async function sortCollectionBySales(collectionId, sales, usedProductIds) {
+  const { NO_ALTERNATE_COLLECTION } = getConfig();
+  const shouldAlternate = collectionId !== NO_ALTERNATE_COLLECTION;
+  
+  console.log(`\nProcesando: ${collectionId} ${shouldAlternate ? '(alternando tipos)' : '(sin alternar)'}`);
   const { products, title } = await getCollectionProducts(collectionId);
-  const sorted = sortProductsNoConsecutiveColors(products, sales);
+  const sorted = sortProductsWithRules(products, sales, usedProductIds, shouldAlternate);
   await reorderCollection(collectionId, sorted.map(p => p.id));
+  
   console.log(`OK "${title}" ordenada`);
-  console.log(`Top 10:`);
-  sorted.slice(0, 10).forEach((p, i) => {
-    console.log(`   ${i + 1}. ${p.title} | ${p.color} | ${p.availableSizes} tallas | ${p.salesCount} ventas`);
+  console.log(`Top 12:`);
+  sorted.slice(0, 12).forEach((p, i) => {
+    console.log(`   ${i + 1}. ${p.title} | ${p.productType} | ${p.color} | ${p.salesCount} ventas`);
   });
-  return { collectionId, title, total: products.length, eligible: sorted.filter(p => p.hasEnoughSizes && !p.isSoldOut).length, fewSizes: sorted.filter(p => !p.hasEnoughSizes && !p.isSoldOut).length, soldOut: sorted.filter(p => p.isSoldOut).length };
+  
+  return { collectionId, title, total: products.length };
 }
 
 async function sortAllCollections() {
-  const { DAYS, COLLECTION_IDS, MIN_SIZES } = getConfig();
+  const { DAYS, COLLECTION_IDS, MIN_SIZES, VISIBLE_PRODUCTS } = getConfig();
   console.log('YUXUS WINTER SALE - Ordenacion por ventas');
   console.log(`Ventas ultimo ${DAYS} dia`);
-  console.log(`Minimo ${MIN_SIZES} tallas disponibles`);
+  console.log(`Minimo ${MIN_SIZES} tallas`);
   console.log(`Sin colores consecutivos`);
+  console.log(`Alternando: 2 hoodies/crewnecks + 1 otro`);
+  console.log(`Sin repetir en primeros ${VISIBLE_PRODUCTS} de cada coleccion`);
   console.log(`Colecciones: ${COLLECTION_IDS.length}\n`);
+  
   const sales = await getSalesFromDays(DAYS);
+  const usedProductIds = new Set();
   const results = [];
+  
   for (const id of COLLECTION_IDS) {
-    try { results.push(await sortCollectionBySales(id, sales)); }
+    try { results.push(await sortCollectionBySales(id, sales, usedProductIds)); }
     catch (e) { console.error(`Error ${id}:`, e.message); results.push({ collectionId: id, error: e.message }); }
   }
+  
   console.log('\nCompletado!');
-  return { success: true, stats: { days: DAYS, minSizes: MIN_SIZES, collections: results.length }, results };
+  console.log(`Productos unicos en home: ${usedProductIds.size}`);
+  return { success: true, stats: { days: DAYS, minSizes: MIN_SIZES, uniqueProducts: usedProductIds.size }, results };
 }
